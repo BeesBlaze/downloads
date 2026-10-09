@@ -1,0 +1,41 @@
+name: Publish BeesBlaze Windows release
+on:
+  push:
+    paths:
+      - '.github/workflows/publish-release.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare verified installer
+        env:
+          ARTIFACT_URL: 'https://sdmntprindiasocentral.oaiusercontent.com/files/00000000-803c-8211-a448-e43d505641eb/raw?se=2026-10-09T08%3A47%3A03Z&sp=r&sv=2026-02-06&sr=b&scid=b4d9bfb4-163b-443a-aca6-2e7a3ec1f5eb&skoid=37f774a3-b6f2-4e56-9fdd-339e5d6e97f8&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-10-09T01%3A54%3A41Z&ske=2026-10-10T01%3A54%3A41Z&sks=b&skv=2026-02-06&sig=rkMHv0oDA4HLKrnAHLnjtU9U3VU9NgV1CeHnhwcYWqU%3D'
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,urllib.request,zipfile
+          name='BeesBlazeVideoEditor-0.1.15-Windows-Setup.exe'
+          expected='a86f57da58128abe6677c7adafdbd5f03b629d408112f595486914f6c4d576bf'
+          request=urllib.request.Request(os.environ['ARTIFACT_URL'],headers={'User-Agent':'Mozilla/5.0'})
+          with urllib.request.urlopen(request,timeout=90) as response,open('installer.zip','wb') as out:
+              while chunk:=response.read(1024*1024):out.write(chunk)
+          root=pathlib.Path('dist');root.mkdir()
+          with zipfile.ZipFile('installer.zip') as z:
+              entries=[x for x in z.infolist() if pathlib.PurePosixPath(x.filename).name==name]
+              if len(entries)!=1:raise ValueError('Expected one installer')
+              (root/name).write_bytes(z.read(entries[0]))
+          checksum=hashlib.sha256((root/name).read_bytes()).hexdigest()
+          if checksum!=expected:raise ValueError('Installer checksum mismatch')
+          manifest={'version':'0.1.15','windows_url':'https://github.com/BeesBlaze/downloads/releases/download/v0.1.15/'+name,'sha256':checksum}
+          (root/'update.json').write_text(json.dumps(manifest,indent=2)+chr(10))
+          (root/'SHA256SUMS.txt').write_text(checksum+'  '+name+chr(10))
+          pathlib.Path('release-notes.md').write_text(chr(10).join(['BeesBlaze Video Editor 0.1.15 for Windows.','','Includes color correction and grade presets, chroma key, video masks, portable projects with source media, missing-media relinking, default export folder settings, export playback and verified update downloads. Compatible unchanged videos can export without re-encoding.','','Windows installation and upgrade checks passed, including WAV import and MP3/WAV export. Google login and Drive sync are not included.']))
+          PY
+      - name: Publish BeesBlaze release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.1.15 dist/* --repo BeesBlaze/downloads --title 'BeesBlaze 0.1.15' --notes-file release-notes.md --latest
