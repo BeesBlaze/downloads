@@ -28,22 +28,28 @@ jobs:
       - name: Prepare verified installers and update information
         run: |
           python3 - <<'PY'
-          import hashlib,json,os,pathlib,re,shutil,urllib.parse,urllib.request,zipfile
+          import hashlib,json,os,pathlib,re,shutil,urllib.parse,urllib.request,zipfile,concurrent.futures
           version=os.environ['VERSION']
           if not re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+',version):raise ValueError('Invalid version')
           assets=json.loads(os.environ['ASSETS'])
           if len(assets)!=3 or {a['platform'] for a in assets}!={'windows','arm64','x86_64'}:raise ValueError('Expected Windows and both Mac architectures')
           root=pathlib.Path('dist');root.mkdir()
           manifest={'version':version,'macos':{}};sums=[]
+          def download(asset):
+              platform=asset['platform'];url=asset['url']
+              if urllib.parse.urlsplit(url).scheme!='https':raise ValueError('HTTPS required')
+              print('Downloading '+platform,flush=True)
+              request=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(request,timeout=180) as response,open('source-'+platform,'wb') as output:
+                  shutil.copyfileobj(response,output,1024*1024)
+              print('Downloaded '+platform,flush=True)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:list(pool.map(download,assets))
           for asset in assets:
               platform=asset['platform'];expected=asset['sha256'].lower();url=asset['url']
               if not re.fullmatch(r'[0-9a-f]{64}',expected):raise ValueError('Invalid checksum')
               if urllib.parse.urlsplit(url).scheme!='https':raise ValueError('HTTPS required')
               name=f'BeesBlazeVideoEditor-{version}-Windows-Setup.exe' if platform=='windows' else f'BeesBlazeVideoEditor-{version}-Mac-{platform}.dmg'
               archive=pathlib.Path('source-'+platform)
-              request=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
-              with urllib.request.urlopen(request,timeout=180) as response,archive.open('wb') as output:
-                  shutil.copyfileobj(response,output,1024*1024)
               target=root/name
               if zipfile.is_zipfile(archive):
                   with zipfile.ZipFile(archive) as z:
