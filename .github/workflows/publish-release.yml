@@ -6,9 +6,18 @@ on:
         description: Version number
         required: true
         type: string
+      mode:
+        description: Release operation
+        required: true
+        default: publish_urls
+        type: choice
+        options:
+          - publish_urls
+          - prepare_draft
+          - publish_draft
       assets:
         description: JSON array of verified installer download URLs and SHA256 checksums
-        required: true
+        required: false
         type: string
       release_notes:
         description: Changes in this version
@@ -22,33 +31,51 @@ jobs:
     timeout-minutes: 20
     env:
       VERSION: ${{ inputs.version }}
+      MODE: ${{ inputs.mode }}
+      GH_TOKEN: ${{ github.token }}
       ASSETS: ${{ inputs.assets }}
       RELEASE_NOTES: ${{ inputs.release_notes }}
     steps:
+      - name: Prepare private draft for verified installer uploads
+        if: inputs.mode == 'prepare_draft'
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || exit 1
+          printf '%s' "$RELEASE_NOTES" > release-notes.md
+          gh release create "v$VERSION" --repo BeesBlaze/downloads --draft --title "BeesBlaze $VERSION" --notes-file release-notes.md
       - name: Prepare verified installers and update information
+        if: inputs.mode != 'prepare_draft'
         run: |
           python3 - <<'PY'
-          import hashlib,json,os,pathlib,re,shutil,urllib.parse,urllib.request,zipfile,concurrent.futures
+          import hashlib,json,os,pathlib,re,shutil,urllib.parse,urllib.request,zipfile,concurrent.futures,subprocess
           version=os.environ['VERSION']
           if not re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+',version):raise ValueError('Invalid version')
+          names={'windows':f'BeesBlazeVideoEditor-{version}-Windows-Setup.exe','arm64':f'BeesBlazeVideoEditor-{version}-Mac-arm64.dmg','x86_64':f'BeesBlazeVideoEditor-{version}-Mac-x86_64.dmg'}
           assets=json.loads(os.environ['ASSETS'])
           if len(assets)!=3 or {a['platform'] for a in assets}!={'windows','arm64','x86_64'}:raise ValueError('Expected Windows and both Mac architectures')
+          if os.environ['MODE']=='publish_draft':
+              release=json.loads(subprocess.check_output(['gh','release','view',f'v{version}','--repo','BeesBlaze/downloads','--json','isDraft,assets']))
+              if not release['isDraft']:raise ValueError('Expected an unpublished draft')
+              for item in assets:
+                  if sum(a['name']==names[item['platform']] for a in release['assets'])!=1:raise ValueError('Missing draft installer')
           root=pathlib.Path('dist');root.mkdir()
           manifest={'version':version,'macos':{}};sums=[]
           def download(asset):
-              platform=asset['platform'];url=asset['url']
-              if urllib.parse.urlsplit(url).scheme!='https':raise ValueError('HTTPS required')
+              platform=asset['platform']
               print('Downloading '+platform,flush=True)
-              request=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
-              with urllib.request.urlopen(request,timeout=180) as response,open('source-'+platform,'wb') as output:
-                  shutil.copyfileobj(response,output,1024*1024)
+              if os.environ['MODE']=='publish_draft':
+                  subprocess.run(['gh','release','download',f'v{version}','--repo','BeesBlaze/downloads','--pattern',names[platform],'--output','source-'+platform],check=True,timeout=180)
+              else:
+                  url=asset['url']
+                  if urllib.parse.urlsplit(url).scheme!='https':raise ValueError('HTTPS required')
+                  request=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+                  with urllib.request.urlopen(request,timeout=180) as response,open('source-'+platform,'wb') as output:
+                      shutil.copyfileobj(response,output,1024*1024)
               print('Downloaded '+platform,flush=True)
           with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:list(pool.map(download,assets))
           for asset in assets:
-              platform=asset['platform'];expected=asset['sha256'].lower();url=asset['url']
+              platform=asset['platform'];expected=asset['sha256'].lower()
               if not re.fullmatch(r'[0-9a-f]{64}',expected):raise ValueError('Invalid checksum')
-              if urllib.parse.urlsplit(url).scheme!='https':raise ValueError('HTTPS required')
-              name=f'BeesBlazeVideoEditor-{version}-Windows-Setup.exe' if platform=='windows' else f'BeesBlazeVideoEditor-{version}-Mac-{platform}.dmg'
+              name=names[platform]
               archive=pathlib.Path('source-'+platform)
               target=root/name
               if zipfile.is_zipfile(archive):
@@ -73,7 +100,11 @@ jobs:
           pathlib.Path('release-notes.md').write_text(os.environ['RELEASE_NOTES'])
           PY
       - name: Publish BeesBlaze release
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: inputs.mode != 'prepare_draft'
         run: |
-          gh release create "v$VERSION" dist/* --repo BeesBlaze/downloads --title "BeesBlaze $VERSION" --notes-file release-notes.md --latest
+          if [ "$MODE" = "publish_draft" ]; then
+            gh release upload "v$VERSION" dist/update.json dist/SHA256SUMS.txt --repo BeesBlaze/downloads --clobber
+            gh release edit "v$VERSION" --repo BeesBlaze/downloads --draft=false --latest --title "BeesBlaze $VERSION" --notes-file release-notes.md
+          else
+            gh release create "v$VERSION" dist/* --repo BeesBlaze/downloads --title "BeesBlaze $VERSION" --notes-file release-notes.md --latest
+          fi
