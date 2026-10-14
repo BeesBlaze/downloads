@@ -31,7 +31,7 @@ jobs:
           BB_ENCRYPTED_SOURCE_KEY: ${{ secrets.BEESBLAZE_BUILD_SOURCE_KEY }}
         run: |
           python -m pip install cryptography==45.0.7 PyYAML==6.0.2
-          gh release download private-build-v0.1.19 --repo BeesBlaze/downloads --pattern BeesBlaze-private-source-0.1.19-r3.enc --output private-source.enc
+          gh release download private-build-v0.1.19 --repo BeesBlaze/downloads --pattern BeesBlaze-private-source-0.1.19-r4.enc --output private-source.enc
           python - <<'PY'
           import base64,io,os,tarfile,pathlib
           from cryptography.hazmat.primitives.ciphers.aead import AESGCM
