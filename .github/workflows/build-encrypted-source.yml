@@ -1,10 +1,44 @@
 name: Build BeesBlaze from encrypted private source
 on:
   workflow_dispatch:
+    inputs:
+      phase:
+        description: Prepare public encryption key or build verified installers
+        required: true
+        default: prepare
+        type: choice
+        options: [prepare, build]
 permissions:
   contents: write
 jobs:
+  prepare:
+    if: inputs.phase == 'prepare'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare nonsecret encryption key and unpublished release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BB_ENCRYPTED_SOURCE_KEY: ${{ secrets.BEESBLAZE_BUILD_SOURCE_KEY }}
+        run: |
+          python -m pip install cryptography==45.0.7
+          python - <<'PY'
+          import os,base64,hashlib,pathlib,subprocess
+          from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+          secret=base64.urlsafe_b64decode(os.environ['BB_ENCRYPTED_SOURCE_KEY'])
+          if len(secret)!=32: raise ValueError('Build secret unavailable')
+          seed=hashlib.sha256(b'BB-source-seal-v1'+secret).digest()
+          public=X25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw()
+          print('BUILD_PUBLIC_KEY='+base64.b64encode(public).decode(),flush=True)
+          notes='New BeesBlaze interface with three-column media cards, search and view controls. One default timeline track, matching media tracks on drag and drop, visible placement guides, reliable highlighted clip selection, Shift selection and box selection. Clip volume lines, right-click muting, grouping, compound clips and audio extraction. Windows and native Apple Silicon and Intel Mac builds. Earlier P1 caption, keyframe, background-removal and speed-ramp features retained. P2 and P3 roadmap features remain for later releases. Mac updates require replacing the app in Applications.'
+          for tag,title in [('private-build-v0.1.20','Unpublished encrypted build inputs'),('v0.1.20','BeesBlaze 0.1.20')]:
+              if subprocess.run(['gh','release','view',tag,'--repo','BeesBlaze/downloads'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:
+                  subprocess.run(['gh','release','create',tag,'--repo','BeesBlaze/downloads','--draft','--title',title,'--notes',notes if tag=='v0.1.20' else 'Encrypted build inputs. Do not publish.'],check=True)
+          PY
   build:
+    if: inputs.phase == 'build'
     name: Build ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -25,26 +59,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare encrypted source privately
+      - name: Prepare encrypted private source
         env:
           GH_TOKEN: ${{ github.token }}
           BB_ENCRYPTED_SOURCE_KEY: ${{ secrets.BEESBLAZE_BUILD_SOURCE_KEY }}
         run: |
           python -m pip install cryptography==45.0.7 PyYAML==6.0.2
-          gh release download private-build-v0.1.19 --repo BeesBlaze/downloads --pattern BeesBlaze-private-source-0.1.19-r4.enc --output private-source.enc
+          gh release download private-build-v0.1.20 --repo BeesBlaze/downloads --pattern BeesBlaze-private-source-0.1.20.enc --output private-source.enc
           python - <<'PY'
-          import base64,io,os,tarfile,pathlib
+          import base64,hashlib,io,os,pathlib,tarfile
+          from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey,X25519PublicKey
+          from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+          from cryptography.hazmat.primitives import hashes
           from cryptography.hazmat.primitives.ciphers.aead import AESGCM
           data=pathlib.Path('private-source.enc').read_bytes()
-          if data[:7]!=b'BBENC1\0':raise ValueError('Invalid encrypted source.')
-          key=base64.urlsafe_b64decode(os.environ['BB_ENCRYPTED_SOURCE_KEY'])
-          source=AESGCM(key).decrypt(data[7:19],data[19:],b'BeesBlaze-0.1.19')
+          if data[:7]!=b'BBX201\0':raise ValueError('Invalid encrypted input')
+          secret=base64.urlsafe_b64decode(os.environ['BB_ENCRYPTED_SOURCE_KEY'])
+          if len(secret)!=32: raise ValueError('Build secret unavailable')
+          seed=hashlib.sha256(b'BB-source-seal-v1'+secret).digest()
+          shared=X25519PrivateKey.from_private_bytes(seed).exchange(X25519PublicKey.from_public_bytes(data[7:39]))
+          key=HKDF(algorithm=hashes.SHA256(),length=32,salt=None,info=b'BeesBlaze-0.1.20').derive(shared)
+          source=AESGCM(key).decrypt(data[39:51],data[51:],b'BeesBlaze-0.1.20')
           with tarfile.open(fileobj=io.BytesIO(source),mode='r:gz') as archive:archive.extractall(filter='data')
-          del source,key
-          print('Encrypted source prepared without publishing its contents.')
+          path=pathlib.Path('.build-session-key');path.write_bytes(key);path.chmod(0o600)
+          print('Encrypted source prepared privately.')
           PY
       - name: Build and verify native installer
         env:
           GH_TOKEN: ${{ github.token }}
-          BB_ENCRYPTED_SOURCE_KEY: ${{ secrets.BEESBLAZE_BUILD_SOURCE_KEY }}
         run: python private_ci.py
