@@ -51,7 +51,7 @@ jobs:
           if not re.fullmatch(r'[0-9]+[.][0-9]+[.][0-9]+',version):raise ValueError('Invalid version')
           names={'windows':f'BeesBlazeVideoEditor-{version}-Windows-Setup.exe','arm64':f'BeesBlazeVideoEditor-{version}-Mac-arm64.dmg','x86_64':f'BeesBlazeVideoEditor-{version}-Mac-x86_64.dmg'}
           assets=json.loads(os.environ['ASSETS'])
-          if len(assets)!=3 or {a['platform'] for a in assets}!={'windows','arm64','x86_64'}:raise ValueError('Expected Windows and both Mac architectures')
+          if len(assets) not in (2,3) or {a['platform'] for a in assets} not in ({'windows','arm64'},{'windows','arm64','x86_64'}):raise ValueError('Expected Windows and Apple Silicon Mac, with optional Intel Mac')
           if os.environ['MODE']=='publish_draft':
               release=json.loads(subprocess.check_output(['gh','release','view',f'v{version}','--repo','BeesBlaze/downloads','--json','isDraft,assets']))
               if not release['isDraft']:raise ValueError('Expected an unpublished draft')
